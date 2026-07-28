@@ -1,154 +1,295 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  digits,
+  groupProducts,
+  makeDownloadPages,
+  makeEsmRows,
+  naverHeaders,
+  validateProducts,
+} from "./excel";
+import type { DownloadPage, MarketTab, Product, StepId, WorkerResponse } from "./types";
 
-type Row = Record<string, unknown>;
-type Market = "smartstore" | "esm";
-type Product = {
-  sellerCode: string;
-  name: string;
-  price: number;
-  stock: number;
-  image: string;
-  detail: string;
-  shippingFee: number;
-  vat: string;
-  category: string;
-};
+const steps: { id: StepId; label: string }[] = [
+  { id: "category", label: "1. 카테고리" },
+  { id: "notice", label: "2. 고시정보" },
+  { id: "origin", label: "3. 원산지" },
+  { id: "shipping", label: "4. 배송정책" },
+  { id: "price", label: "5. 가격" },
+  { id: "review", label: "6. 최종검사·다운로드" },
+];
 
-const clean = (v: unknown) => String(v ?? "").trim();
-const key = (v: unknown) => clean(v).replace(/[\s_\-()/\[\]]/g, "").toLowerCase();
-const num = (v: unknown) => {
-  const n = Number(clean(v).replace(/,/g, "").replace(/[^0-9.-]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-};
-const aliases = {
-  name: ["상품명", "제품명", "품명", "상품이름"],
-  code: ["판매자상품코드", "판매자 상품코드", "상품코드", "관리코드"],
-  price: ["판매가", "판매가격", "상품가격", "공급가", "원가", "가격"],
-  stock: ["재고수량", "재고", "수량", "판매가능수량"],
-  image: ["대표이미지", "대표이미지URL", "메인이미지", "기본이미지", "이미지URL"],
-  detail: ["상세설명", "상품설명", "상품상세설명", "상세HTML"],
-  shipping: ["기본배송비", "배송비"],
-  vat: ["부가세", "과세구분", "부가세유형"],
-  category: ["카테고리코드", "카테고리 코드"],
-};
+const GROUP_PAGE_SIZE = 30;
 
-function pick(row: Row, names: string[]) {
-  const entries = Object.entries(row);
-  for (const name of names) {
-    const found = entries.find(([k]) => key(k) === key(name));
-    if (found && clean(found[1])) return found[1];
-  }
-  return "";
-}
-
-function toProducts(rows: Row[]): Product[] {
-  return rows.map((row, i) => ({
-    sellerCode: clean(pick(row, aliases.code)) || `P${i + 1}`,
-    name: clean(pick(row, aliases.name)),
-    price: num(pick(row, aliases.price)),
-    stock: num(pick(row, aliases.stock)) || 99999,
-    image: clean(pick(row, aliases.image)),
-    detail: clean(pick(row, aliases.detail)),
-    shippingFee: num(pick(row, aliases.shipping)),
-    vat: clean(pick(row, aliases.vat)) || "과세상품",
-    category: clean(pick(row, aliases.category)),
-  })).filter(p => p.name && p.price > 0);
+function safeFileName(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "_");
 }
 
 export default function Page() {
-  const [market, setMarket] = useState<Market>("smartstore");
-  const [rows, setRows] = useState<Row[]>([]);
+  const workerRef = useRef<Worker | null>(null);
+  const [market, setMarket] = useState<MarketTab>("smartstore");
   const [products, setProducts] = useState<Product[]>([]);
+  const [sourceRowCount, setSourceRowCount] = useState(0);
+  const [fileName, setFileName] = useState("");
   const [status, setStatus] = useState("상품 엑셀을 업로드해 주세요.");
   const [busy, setBusy] = useState(false);
+
   const [feeRate, setFeeRate] = useState(6);
-  const [marginRate, setMarginRate] = useState(30);
+  const [smartMargin, setSmartMargin] = useState(30);
   const [extraCost, setExtraCost] = useState(0);
-  const [roundUnit, setRoundUnit] = useState(100);
+  const [smartRound, setSmartRound] = useState(100);
   const [smartCategory, setSmartCategory] = useState("50001770");
-  const [courier, setCourier] = useState("CJGLS");
-  const [asPhone, setAsPhone] = useState("01027483227");
+  const [smartCourier, setSmartCourier] = useState("CJGLS");
+  const [asPhone, setAsPhone] = useState("");
+
   const [auctionId, setAuctionId] = useState("");
   const [gmarketId, setGmarketId] = useState("");
+  const [step, setStep] = useState<StepId>("category");
+  const [selectedGroup, setSelectedGroup] = useState("");
+  const [groupPage, setGroupPage] = useState(0);
+  const [esmMargin, setEsmMargin] = useState(0);
+  const [esmRound, setEsmRound] = useState(100);
 
-  const categoryPages = useMemo(() => {
-    const map = new Map<string, Product[]>();
-    products.forEach(p => {
-      const k = p.category || "미분류";
-      map.set(k, [...(map.get(k) ?? []), p]);
-    });
-    return [...map.entries()].flatMap(([category, items]) =>
-      Array.from({ length: Math.ceil(items.length / 500) }, (_, page) => ({
-        category,
-        page: page + 1,
-        items: items.slice(page * 500, page * 500 + 500),
-      }))
-    );
-  }, [products]);
+  useEffect(() => {
+    return () => workerRef.current?.terminate();
+  }, []);
 
-  async function upload(file?: File) {
+  const groups = useMemo(() => groupProducts(products, step), [products, step]);
+  const currentGroup = groups.find((group) => group.name === selectedGroup) ?? groups[0];
+  const visibleGroups = useMemo(
+    () => groups.slice(groupPage * GROUP_PAGE_SIZE, groupPage * GROUP_PAGE_SIZE + GROUP_PAGE_SIZE),
+    [groups, groupPage],
+  );
+  const downloadPages = useMemo<DownloadPage[]>(() => makeDownloadPages(products), [products]);
+  const validationMessages = useMemo(() => validateProducts(products), [products]);
+
+  async function uploadFile(file?: File) {
     if (!file) return;
+
+    workerRef.current?.terminate();
     setBusy(true);
-    setStatus("엑셀을 읽고 있습니다.");
+    setFileName(file.name);
+    setStatus("엑셀을 분석하고 있습니다. 탭과 입력창은 계속 사용할 수 있습니다.");
+
+    try {
+      const worker = new Worker(new URL("./excel.worker.ts", import.meta.url), { type: "module" });
+      workerRef.current = worker;
+
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        const response = event.data;
+        if (!response.ok) {
+          setStatus(response.message);
+          setBusy(false);
+          worker.terminate();
+          workerRef.current = null;
+          return;
+        }
+
+        setProducts(response.products);
+        setSourceRowCount(response.rows.length);
+        setStep("category");
+        setSelectedGroup("");
+        setGroupPage(0);
+        setStatus(
+          `${response.sheetName} 시트 ${response.headerRow}행을 제목으로 인식했습니다. ${response.products.length}개 상품을 읽었습니다.`,
+        );
+        setBusy(false);
+        worker.terminate();
+        workerRef.current = null;
+      };
+
+      worker.onerror = () => {
+        setStatus("엑셀 분석 중 오류가 발생했습니다. 다른 형식의 파일로 다시 시도해 주세요.");
+        setBusy(false);
+        worker.terminate();
+        workerRef.current = null;
+      };
+
+      const buffer = await file.arrayBuffer();
+      worker.postMessage(buffer, [buffer]);
+    } catch (error) {
+      setStatus(error instanceof Error ? `파일 준비 오류: ${error.message}` : "파일을 읽지 못했습니다.");
+      setBusy(false);
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    }
+  }
+
+  function selectStep(nextStep: StepId) {
+    setStep(nextStep);
+    setSelectedGroup("");
+    setGroupPage(0);
+  }
+
+  function patchCurrentGroup(patch: Partial<Product>) {
+    if (!currentGroup) return;
+    const ids = new Set(currentGroup.items.map((item) => item.id));
+    setProducts((current) => current.map((product) => (ids.has(product.id) ? { ...product, ...patch } : product)));
+    setStatus(`${currentGroup.items.length}개 상품에 적용했습니다.`);
+  }
+
+  function applyEsmPrices() {
+    const unit = Math.max(1, esmRound);
+    setProducts((current) =>
+      current.map((product) => ({
+        ...product,
+        finalPrice:
+          esmMargin === 0
+            ? product.basePrice
+            : Math.ceil((product.basePrice * (1 + esmMargin / 100)) / unit) * unit,
+      })),
+    );
+    setStatus(`${products.length}개 상품의 ESM 판매가를 적용했습니다.`);
+  }
+
+  async function downloadSmartStore() {
+    if (!products.length) return;
+    setBusy(true);
+    setStatus("스마트스토어 엑셀을 만들고 있습니다.");
+
     try {
       const XLSX = await import("xlsx");
-      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: false });
-      const candidates = [...aliases.name, ...aliases.price].map(key);
-      let headerIndex = 0;
-      let best = -1;
-      matrix.slice(0, 30).forEach((row, i) => {
-        const score = row.map(key).filter(v => candidates.includes(v)).length;
-        if (score > best) { best = score; headerIndex = i; }
+      const unit = Math.max(1, smartRound);
+      const body = products.map((product) => {
+        const salePrice =
+          Math.ceil(((product.basePrice + extraCost) * (1 + (feeRate + smartMargin) / 100)) / unit) * unit;
+        const shippingFee = Math.max(0, product.shippingFee);
+        const returnFee = shippingFee || 3000;
+
+        return [
+          product.sellerCode,
+          product.categoryCode || smartCategory,
+          product.productName,
+          "신상품",
+          salePrice,
+          product.vatType || "과세상품",
+          product.stock,
+          product.mainImage,
+          product.additionalImage,
+          product.detailHtml,
+          product.originRegionCode || "03",
+          product.multipleOrigins === "단일원산지" ? "N" : "Y",
+          product.originDirect,
+          "Y",
+          "택배, 소포, 등기",
+          smartCourier,
+          shippingFee > 0 ? "유료" : "무료",
+          shippingFee,
+          returnFee,
+          returnFee * 2,
+          "N",
+          asPhone,
+          "판매자에게 문의하시거나 A/S 연락처로 문의해 주세요.",
+          "Y",
+          "N",
+        ];
       });
-      const headers = (matrix[headerIndex] ?? []).map((v, i) => clean(v) || `열${i + 1}`);
-      const parsedRows = matrix.slice(headerIndex + 1)
-        .map(values => Object.fromEntries(headers.map((h, i) => [h, values[i] ?? ""])))
-        .filter(row => Object.values(row).some(v => clean(v)));
-      const parsed = toProducts(parsedRows);
-      setRows(parsedRows);
-      setProducts(parsed);
-      setStatus(`${parsed.length}개 상품을 읽었습니다.`);
-    } catch {
-      setStatus("파일을 읽지 못했습니다. 엑셀 형식을 확인해 주세요.");
+
+      const worksheet = XLSX.utils.aoa_to_sheet([naverHeaders, ...body]);
+      worksheet["!cols"] = naverHeaders.map(() => ({ wch: 18 }));
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "일괄등록");
+      XLSX.writeFile(workbook, "postsheet03_스마트스토어.xlsx");
+      setStatus("스마트스토어 엑셀 다운로드를 시작했습니다.");
+    } catch (error) {
+      setStatus(error instanceof Error ? `다운로드 오류: ${error.message}` : "엑셀을 만들지 못했습니다.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function downloadSmart() {
-    if (!rows.length) return;
+  async function downloadEsmPage(page: DownloadPage) {
+    if (!auctionId.trim() || !gmarketId.trim()) {
+      setStatus("옥션 판매자 ID와 G마켓 판매자 ID를 먼저 입력해 주세요.");
+      return;
+    }
+
     setBusy(true);
+    setStatus(`${page.items.length}개 상품의 ESM 엑셀을 만들고 있습니다.`);
+
     try {
       const XLSX = await import("xlsx");
-      const headers = ["판매자 상품코드","카테고리코드","상품명","상품상태","판매가","부가세","재고수량","대표이미지","추가이미지","상세설명","원산지코드","복수원산지여부","원산지 직접입력","미성년자 구매","배송방법","택배사코드","배송비유형","기본배송비","반품배송비","교환배송비","별도설치비","A/S 전화번호","A/S 안내","구매평 노출여부","알림받기 동의 고객 전용 여부"];
-      const body = products.map(p => {
-        const sale = Math.ceil(((p.price + extraCost) * (1 + (feeRate + marginRate) / 100)) / Math.max(1, roundUnit)) * Math.max(1, roundUnit);
-        return [p.sellerCode, p.category || smartCategory, p.name, "신상품", sale, p.vat, p.stock, p.image, "", p.detail, "03", "N", "", "Y", "택배, 소포, 등기", courier, p.shippingFee > 0 ? "유료" : "무료", p.shippingFee, p.shippingFee || 3000, (p.shippingFee || 3000) * 2, "N", asPhone, "판매자에게 문의해 주세요.", "Y", "N"];
-      });
-      const ws = XLSX.utils.aoa_to_sheet([headers, ...body]);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "일괄등록");
-      XLSX.writeFile(wb, "postsheet03_스마트스토어.xlsx");
-      setStatus("스마트스토어 파일 다운로드를 시작했습니다.");
-    } finally { setBusy(false); }
+      const worksheet = XLSX.utils.aoa_to_sheet(makeEsmRows(page.items, auctionId.trim(), gmarketId.trim()));
+      worksheet["!cols"] = Array.from({ length: 64 }, () => ({ wch: 16 }));
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "NEW 일반상품");
+      const name = safeFileName(page.category);
+      XLSX.writeFile(workbook, `ESM_카테고리_${name}_${page.page}페이지_${page.items.length}개.xlsx`);
+      setStatus("ESM 엑셀 다운로드를 시작했습니다.");
+    } catch (error) {
+      setStatus(error instanceof Error ? `다운로드 오류: ${error.message}` : "ESM 엑셀을 만들지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function downloadEsm(category: string, page: number, items: Product[]) {
-    setBusy(true);
-    try {
-      const XLSX = await import("xlsx");
-      const headers = ["노출 사이트","A ID","G ID","상품명","카테고리 코드","A 판매가","G 판매가","A 재고","G 재고","기본이미지","상품상세설명"];
-      const body = items.map(p => ["옥션/G마켓", auctionId, gmarketId, p.name, p.category, p.price, p.price, p.stock, p.stock, p.image, p.detail]);
-      const ws = XLSX.utils.aoa_to_sheet([headers, ...body]);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "NEW 일반상품");
-      XLSX.writeFile(wb, `ESM_${category}_${page}페이지_${items.length}개.xlsx`);
-      setStatus("ESM 파일 다운로드를 시작했습니다.");
-    } finally { setBusy(false); }
+  function renderGroupEditor() {
+    if (!currentGroup) return <div className="empty-box">수정할 상품이 없습니다.</div>;
+    const first = currentGroup.items[0];
+
+    if (step === "category") {
+      return (
+        <GroupEditor groupName={currentGroup.name} items={currentGroup.items}>
+          <div className="form-grid">
+            <ApplyField
+              label="카테고리 코드"
+              value={first.categoryCode}
+              numeric
+              onApply={(value) => patchCurrentGroup({ categoryCode: digits(value), categoryGroup: `카테고리 ${digits(value) || "미입력"}` })}
+            />
+            <ApplyField label="옥션 노출코드" value={first.auctionExposureCode} numeric onApply={(value) => patchCurrentGroup({ auctionExposureCode: digits(value) })} />
+            <ApplyField label="G마켓 노출코드" value={first.gmarketExposureCode} numeric onApply={(value) => patchCurrentGroup({ gmarketExposureCode: digits(value) })} />
+            <ApplyField label="상품군 코드" value={first.productGroupCode} numeric onApply={(value) => patchCurrentGroup({ productGroupCode: digits(value) })} />
+          </div>
+        </GroupEditor>
+      );
+    }
+
+    if (step === "notice") {
+      return (
+        <GroupEditor groupName={currentGroup.name} items={currentGroup.items}>
+          <ApplyField
+            label="상품고시정보 템플릿코드"
+            value={first.noticeTemplateCode}
+            numeric
+            onApply={(value) => patchCurrentGroup({ noticeTemplateCode: digits(value) })}
+          />
+        </GroupEditor>
+      );
+    }
+
+    if (step === "origin") {
+      return (
+        <GroupEditor groupName={currentGroup.name} items={currentGroup.items}>
+          <div className="form-grid">
+            <ApplyField label="원산지 상품타입" value={first.originProductType} onApply={(value) => patchCurrentGroup({ originProductType: value })} />
+            <ApplyField label="원산지 지역타입" value={first.originRegionType} onApply={(value) => patchCurrentGroup({ originRegionType: value })} />
+            <ApplyField label="원산지 지역코드" value={first.originRegionCode} numeric onApply={(value) => patchCurrentGroup({ originRegionCode: digits(value) })} />
+            <ApplyField label="복수원산지 여부" value={first.multipleOrigins} onApply={(value) => patchCurrentGroup({ multipleOrigins: value })} />
+          </div>
+        </GroupEditor>
+      );
+    }
+
+    if (step === "shipping") {
+      return (
+        <GroupEditor groupName={currentGroup.name} items={currentGroup.items}>
+          <div className="form-grid">
+            <ApplyField label="출하지 코드" value={first.departureCode} numeric onApply={(value) => patchCurrentGroup({ departureCode: digits(value) })} />
+            <ApplyField label="배송정책번호" value={first.shippingPolicyNumber} numeric onApply={(value) => patchCurrentGroup({ shippingPolicyNumber: digits(value) })} />
+            <ApplyField label="반품·교환 주소 코드" value={first.returnAddressCode} numeric onApply={(value) => patchCurrentGroup({ returnAddressCode: digits(value) })} />
+            <ApplyField label="옥션 발송정책" value={first.auctionShippingPolicy} numeric onApply={(value) => patchCurrentGroup({ auctionShippingPolicy: digits(value) })} />
+            <ApplyField label="G마켓 발송정책" value={first.gmarketShippingPolicy} numeric onApply={(value) => patchCurrentGroup({ gmarketShippingPolicy: digits(value) })} />
+            <ApplyField label="택배사코드" value={first.courierCode} numeric onApply={(value) => patchCurrentGroup({ courierCode: digits(value) })} />
+            <ApplyField label="반품·교환 배송비" value={first.returnShippingFee} numeric onApply={(value) => patchCurrentGroup({ returnShippingFee: Number(value) || 0 })} />
+          </div>
+        </GroupEditor>
+      );
+    }
+
+    return null;
   }
 
   return (
@@ -156,44 +297,271 @@ export default function Page() {
       <section className="hero">
         <span className="badge">POSTSHEET03</span>
         <h1>상품 엑셀 변환</h1>
-        <p>스마트스토어와 ESM 파일을 변환합니다. ZIP은 사용하지 않으며 엑셀 기능은 업로드·다운로드할 때만 불러옵니다.</p>
+        <p>스마트스토어와 ESM 옥션·G마켓 등록 파일을 브라우저에서 변환합니다.</p>
+        <div className="hero-points">
+          <span>서버 저장 없음</span>
+          <span>ZIP 사용 안 함</span>
+          <span>ESM 최대 500개씩 분리</span>
+        </div>
       </section>
 
       <section className="panel">
-        <div className="tabs">
-          <button className={market === "smartstore" ? "active" : ""} onClick={() => setMarket("smartstore")}>스마트스토어</button>
-          <button className={market === "esm" ? "active" : ""} onClick={() => setMarket("esm")}>ESM · 옥션/G마켓</button>
+        <div className="tabs" aria-label="판매처 선택">
+          <button type="button" className={market === "smartstore" ? "active" : ""} onClick={() => setMarket("smartstore")}>스마트스토어</button>
+          <button type="button" className={market === "esm" ? "active" : ""} onClick={() => setMarket("esm")}>ESM · 옥션/G마켓</button>
         </div>
 
-        <div className="grid">
-          <label className="full">상품 일괄목록 엑셀 업로드
-            <input type="file" accept=".xlsx,.xls,.csv" disabled={busy} onChange={e => upload(e.target.files?.[0])} />
-          </label>
+        <label className="upload-box">
+          <strong>상품 일괄목록 엑셀 업로드</strong>
+          <span>.xlsx, .xls, .csv · 안내문과 빈 행이 있어도 제목 행을 탐색합니다.</span>
+          <input
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            disabled={busy}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              void uploadFile(file);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
 
-          {market === "smartstore" ? <>
-            <label>네이버 수수료율 (%)<input type="number" value={feeRate} onChange={e => setFeeRate(Number(e.target.value))} /></label>
-            <label>추가 마진율 (%)<input type="number" value={marginRate} onChange={e => setMarginRate(Number(e.target.value))} /></label>
-            <label>상품당 추가비용<input type="number" value={extraCost} onChange={e => setExtraCost(Number(e.target.value))} /></label>
-            <label>판매가 올림 단위<input type="number" value={roundUnit} onChange={e => setRoundUnit(Number(e.target.value))} /></label>
-            <label>기본 카테고리코드<input value={smartCategory} onChange={e => setSmartCategory(e.target.value)} /></label>
-            <label>택배사코드<input value={courier} onChange={e => setCourier(e.target.value)} /></label>
-            <label>A/S 전화번호<input value={asPhone} onChange={e => setAsPhone(e.target.value)} /></label>
-            <div className="actions full"><button disabled={busy || !products.length} onClick={downloadSmart}>스마트스토어 엑셀 다운로드</button></div>
-          </> : <>
-            <label>옥션 판매자 ID<input value={auctionId} onChange={e => setAuctionId(e.target.value)} /></label>
-            <label>G마켓 판매자 ID<input value={gmarketId} onChange={e => setGmarketId(e.target.value)} /></label>
-            <div className="summary full">
-              <strong>{products.length}개 상품 · {categoryPages.length}개 다운로드 파일</strong>
-              <div className="download-list">
-                {categoryPages.map(p => <button key={`${p.category}-${p.page}`} disabled={busy} onClick={() => downloadEsm(p.category, p.page, p.items)}>{p.category} · {p.page}페이지 · {p.items.length}개 다운로드</button>)}
+        {fileName && (
+          <div className="file-summary">
+            <strong>{fileName}</strong>
+            <span>원본 행 {sourceRowCount.toLocaleString()}개 · 변환 가능 상품 {products.length.toLocaleString()}개</span>
+          </div>
+        )}
+
+        {market === "smartstore" ? (
+          <section className="market-section">
+            <div className="section-heading">
+              <div>
+                <span className="eyebrow">SMART STORE</span>
+                <h2>스마트스토어 설정</h2>
               </div>
+              <span>{products.length.toLocaleString()}개 상품</span>
             </div>
-          </>}
-        </div>
 
-        <div className="status">{busy ? "처리 중 · " : ""}{status}</div>
-        <div className="privacy">원본 엑셀과 개인정보는 서버에 저장하지 않습니다.</div>
+            <div className="form-grid">
+              <NumberField label="네이버 수수료율 (%)" value={feeRate} onChange={setFeeRate} />
+              <NumberField label="추가 마진율 (%)" value={smartMargin} onChange={setSmartMargin} />
+              <NumberField label="상품당 추가비용" value={extraCost} onChange={setExtraCost} />
+              <NumberField label="판매가 올림 단위" value={smartRound} onChange={setSmartRound} min={1} />
+              <TextField label="기본 카테고리코드" value={smartCategory} onChange={setSmartCategory} />
+              <TextField label="택배사코드" value={smartCourier} onChange={setSmartCourier} />
+              <TextField label="A/S 전화번호" value={asPhone} onChange={setAsPhone} placeholder="연락처 입력" />
+            </div>
+
+            <div className="actions">
+              <button type="button" className="primary" disabled={busy || products.length === 0} onClick={() => void downloadSmartStore()}>
+                스마트스토어 엑셀 다운로드
+              </button>
+            </div>
+          </section>
+        ) : (
+          <section className="market-section">
+            <div className="section-heading">
+              <div>
+                <span className="eyebrow">ESM PLUS</span>
+                <h2>옥션·G마켓 설정</h2>
+              </div>
+              <span>{products.length.toLocaleString()}개 상품</span>
+            </div>
+
+            <div className="form-grid seller-fields">
+              <TextField label="옥션 판매자 ID" value={auctionId} onChange={setAuctionId} />
+              <TextField label="G마켓 판매자 ID" value={gmarketId} onChange={setGmarketId} />
+            </div>
+
+            <nav className="stepbar" aria-label="ESM 작업 단계">
+              {steps.map((item) => (
+                <button key={item.id} type="button" className={step === item.id ? "active" : ""} onClick={() => selectStep(item.id)}>
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+
+            {products.length === 0 ? (
+              <div className="empty-box">먼저 상품 엑셀을 업로드해 주세요.</div>
+            ) : ["category", "notice", "origin", "shipping"].includes(step) ? (
+              <div className="group-workspace">
+                <aside className="group-list">
+                  <div className="group-list-head">
+                    <strong>{groups.length.toLocaleString()}개 묶음</strong>
+                    <span>{products.length.toLocaleString()}개 상품</span>
+                  </div>
+                  {visibleGroups.map((group) => (
+                    <button
+                      key={group.name}
+                      type="button"
+                      className={(currentGroup?.name ?? "") === group.name ? "selected" : ""}
+                      onClick={() => setSelectedGroup(group.name)}
+                    >
+                      <strong>{group.name}</strong>
+                      <span>{group.items.length.toLocaleString()}개</span>
+                    </button>
+                  ))}
+                  {groups.length > GROUP_PAGE_SIZE && (
+                    <div className="pager">
+                      <button type="button" disabled={groupPage === 0} onClick={() => setGroupPage((page) => Math.max(0, page - 1))}>이전</button>
+                      <span>{groupPage + 1} / {Math.ceil(groups.length / GROUP_PAGE_SIZE)}</span>
+                      <button type="button" disabled={(groupPage + 1) * GROUP_PAGE_SIZE >= groups.length} onClick={() => setGroupPage((page) => page + 1)}>다음</button>
+                    </div>
+                  )}
+                </aside>
+                <div>{renderGroupEditor()}</div>
+              </div>
+            ) : step === "price" ? (
+              <div className="editor-card">
+                <div className="editor-heading">
+                  <div>
+                    <span className="eyebrow">PRICE</span>
+                    <h3>ESM 전체 가격 적용</h3>
+                  </div>
+                  <span>{products.length.toLocaleString()}개</span>
+                </div>
+                <div className="form-grid">
+                  <NumberField label="마진율 (%)" value={esmMargin} onChange={setEsmMargin} />
+                  <NumberField label="판매가 올림 단위" value={esmRound} onChange={setEsmRound} min={1} />
+                </div>
+                <div className="actions">
+                  <button type="button" className="primary" onClick={applyEsmPrices}>전체 상품 가격 적용</button>
+                </div>
+              </div>
+            ) : (
+              <div className="review-grid">
+                <section className="editor-card">
+                  <div className="editor-heading">
+                    <div>
+                      <span className="eyebrow">FINAL CHECK</span>
+                      <h3>최종검사</h3>
+                    </div>
+                    <span>{validationMessages.length ? `${validationMessages.length}개 확인 필요` : "필수항목 확인"}</span>
+                  </div>
+                  {validationMessages.length ? (
+                    <ul className="warning-list">
+                      {validationMessages.map((message) => <li key={message}>{message}</li>)}
+                    </ul>
+                  ) : (
+                    <div className="success-box">현재 자동검사에서 누락된 필수항목이 없습니다.</div>
+                  )}
+                </section>
+
+                <section className="editor-card">
+                  <div className="editor-heading">
+                    <div>
+                      <span className="eyebrow">DOWNLOAD</span>
+                      <h3>카테고리별 개별 다운로드</h3>
+                    </div>
+                    <span>{downloadPages.length.toLocaleString()}개 파일</span>
+                  </div>
+                  <p className="description">카테고리별 최대 500개씩 나눕니다. ZIP 압축은 사용하지 않습니다.</p>
+                  <div className="download-list">
+                    {downloadPages.map((page) => (
+                      <button key={page.key} type="button" disabled={busy} onClick={() => void downloadEsmPage(page)}>
+                        <strong>카테고리 {page.category}</strong>
+                        <span>{page.page}페이지 · {page.items.length.toLocaleString()}개 다운로드</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            )}
+          </section>
+        )}
+
+        <div className="status" role="status" aria-live="polite">
+          {busy && <span className="status-dot" aria-hidden="true" />}
+          {status}
+        </div>
+        <div className="privacy">원본 엑셀, 변환 결과와 개인정보는 서버에 저장하지 않습니다.</div>
       </section>
     </main>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  min,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input type="number" min={min} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
+function ApplyField({
+  label,
+  value,
+  onApply,
+  numeric = false,
+}: {
+  label: string;
+  value: string | number;
+  onApply: (value: string) => void;
+  numeric?: boolean;
+}) {
+  const [draft, setDraft] = useState(String(value ?? ""));
+
+  useEffect(() => {
+    setDraft(String(value ?? ""));
+  }, [value]);
+
+  return (
+    <label className="field apply-field">
+      <span>{label}</span>
+      <input type={numeric ? "number" : "text"} value={draft} onChange={(event) => setDraft(event.target.value)} />
+      <button type="button" onClick={() => onApply(draft)}>이 묶음에 적용</button>
+    </label>
+  );
+}
+
+function GroupEditor({ groupName, items, children }: { groupName: string; items: Product[]; children: ReactNode }) {
+  return (
+    <section className="editor-card">
+      <div className="editor-heading">
+        <div>
+          <span className="eyebrow">GROUP EDIT</span>
+          <h3>{groupName}</h3>
+        </div>
+        <span>{items.length.toLocaleString()}개 상품</span>
+      </div>
+      <details className="sample-products">
+        <summary>상품명 확인</summary>
+        <ul>
+          {items.slice(0, 10).map((item) => <li key={item.id}>{item.productName}</li>)}
+        </ul>
+      </details>
+      <div className="editor-fields">{children}</div>
+    </section>
   );
 }
