@@ -14,14 +14,21 @@ const rows = [
   ["상품명", "판매자 상품코드", "판매가", "재고수량", "대표이미지", "상세설명", "카테고리코드", "원산지코드", "출하지 코드", "배송정책번호", "반품/교환 주소 코드", "A 발송정책", "G 발송정책", "상품고시정보 템플릿코드"],
 ];
 for (let index = 1; index <= 1200; index += 1) {
+  const productName = index <= 400
+    ? `테스트 상품 ${index}`
+    : index <= 800
+      ? `티셔츠 테스트 상품 ${index}`
+      : `만두 테스트 상품 ${index}`;
+  const categoryCode = index <= 400 ? "50000001" : "";
+
   rows.push([
-    `테스트 상품 ${index}`,
+    productName,
     `TEST-${index}`,
     1000 + index,
     10,
     `https://example.com/${index}.jpg`,
     `<p>테스트 상세 ${index}</p>`,
-    "50000001",
+    categoryCode,
     "03",
     "100001",
     "200001",
@@ -62,7 +69,36 @@ try {
   await page.getByRole("heading", { name: "옥션·G마켓 설정" }).waitFor({ state: "visible", timeout: 5_000 });
   await page.getByText(/1200개 상품을 읽었습니다/).waitFor({ state: "visible", timeout: 60_000 });
 
-  for (const label of ["1. 카테고리", "2. 고시정보", "3. 원산지", "4. 배송정책", "5. 가격", "6. 최종검사·다운로드"]) {
+  await page.getByRole("button", { name: "1. 카테고리" }).click();
+  await page.getByText("3개 묶음").waitFor({ state: "visible" });
+
+  const categoryField = page.locator("label.apply-field").filter({ hasText: "카테고리 코드" });
+  const applyCategory = async () => {
+    const input = categoryField.locator("input");
+    await input.fill("50000001");
+    await input.press("Tab");
+    await page.waitForTimeout(100);
+    assert.equal(await input.inputValue(), "50000001");
+    await categoryField.getByRole("button", { name: "이 묶음에 적용" }).click();
+  };
+
+  await page.locator(".group-list button").filter({ hasText: "의류 예상" }).click();
+  await page.locator(".editor-heading h3").filter({ hasText: "의류 예상" }).waitFor({ state: "visible" });
+  await page.waitForTimeout(100);
+  await applyCategory();
+  await page.locator(".editor-heading h3").filter({ hasText: "카테고리 50000001" }).waitFor({ state: "visible" });
+  await page.locator(".editor-heading").getByText("800개 상품").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".group-list button.selected strong").textContent(), "카테고리 50000001");
+
+  await page.locator(".group-list button").filter({ hasText: "가공식품 예상" }).click();
+  await page.locator(".editor-heading h3").filter({ hasText: "가공식품 예상" }).waitFor({ state: "visible" });
+  await page.waitForTimeout(100);
+  await applyCategory();
+  await page.getByText("1개 묶음").waitFor({ state: "visible" });
+  await page.locator(".editor-heading").getByText("1,200개 상품").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".group-list button.selected strong").textContent(), "카테고리 50000001");
+
+  for (const label of ["2. 고시정보", "3. 원산지", "4. 배송정책", "5. 가격", "6. 최종검사·다운로드"]) {
     await page.getByRole("button", { name: label }).click();
   }
 
@@ -96,9 +132,11 @@ try {
 
   assert.deepEqual(browserErrors, [], `브라우저 오류가 발생했습니다:\n${browserErrors.join("\n")}`);
   await writeFile(path.join(outputDir, "browser-smoke.txt"), "PASS\n", "utf8");
-  console.log("PASS: 화면 표시, 클릭, 탭 전환, 엑셀 업로드, Web Worker 분석, 스마트스토어 다운로드, ESM 다운로드를 확인했습니다.");
+  console.log("PASS: 그룹 선택 유지, 같은 카테고리 병합, 화면 클릭, 엑셀 업로드와 다운로드를 확인했습니다.");
 } catch (error) {
   await page.screenshot({ path: path.join(outputDir, "failure.png"), fullPage: true });
+  const details = error instanceof Error ? error.stack || error.message : String(error);
+  await writeFile(path.join(outputDir, "failure.txt"), `${details}\n`, "utf8");
   throw error;
 } finally {
   await browser.close();

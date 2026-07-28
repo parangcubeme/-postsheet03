@@ -10,7 +10,14 @@ import {
   naverHeaders,
   validateProducts,
 } from "./excel";
-import type { DownloadPage, MarketTab, Product, StepId, WorkerResponse } from "./types";
+import type {
+  DownloadPage,
+  MarketTab,
+  Product,
+  ProductGroup,
+  StepId,
+  WorkerResponse,
+} from "./types";
 
 const steps: { id: StepId; label: string }[] = [
   { id: "category", label: "1. 카테고리" },
@@ -25,6 +32,41 @@ const GROUP_PAGE_SIZE = 30;
 
 function safeFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "_");
+}
+
+function groupByName(products: Product[], getName: (product: Product) => string): ProductGroup[] {
+  const map = new Map<string, Product[]>();
+  for (const product of products) {
+    const name = getName(product);
+    const current = map.get(name);
+    if (current) current.push(product);
+    else map.set(name, [product]);
+  }
+  return [...map.entries()].map(([name, items]) => ({ name, items }));
+}
+
+function makeEditorGroups(products: Product[], step: StepId): ProductGroup[] {
+  if (step === "category") {
+    return groupByName(products, (product) =>
+      product.categoryCode ? `카테고리 ${product.categoryCode}` : product.categoryGroup || "카테고리 미입력",
+    );
+  }
+
+  if (step === "shipping") {
+    return groupByName(products, (product) => {
+      const values = [
+        product.departureCode,
+        product.shippingPolicyNumber,
+        product.returnAddressCode,
+        product.auctionShippingPolicy,
+        product.gmarketShippingPolicy,
+        product.courierCode,
+      ].filter(Boolean);
+      return values.length ? values.join(" / ") : "배송정보 미입력";
+    });
+  }
+
+  return groupProducts(products, step);
 }
 
 export default function Page() {
@@ -47,7 +89,7 @@ export default function Page() {
   const [auctionId, setAuctionId] = useState("");
   const [gmarketId, setGmarketId] = useState("");
   const [step, setStep] = useState<StepId>("category");
-  const [selectedGroup, setSelectedGroup] = useState("");
+  const [selectedProductId, setSelectedProductId] = useState("");
   const [groupPage, setGroupPage] = useState(0);
   const [esmMargin, setEsmMargin] = useState(0);
   const [esmRound, setEsmRound] = useState(100);
@@ -56,14 +98,25 @@ export default function Page() {
     return () => workerRef.current?.terminate();
   }, []);
 
-  const groups = useMemo(() => groupProducts(products, step), [products, step]);
-  const currentGroup = groups.find((group) => group.name === selectedGroup) ?? groups[0];
+  const groups = useMemo(() => makeEditorGroups(products, step), [products, step]);
+  const selectedGroupIndex = selectedProductId
+    ? groups.findIndex((group) => group.items.some((item) => item.id === selectedProductId))
+    : groups.length
+      ? 0
+      : -1;
+  const currentGroup = selectedGroupIndex >= 0 ? groups[selectedGroupIndex] : groups[0];
   const visibleGroups = useMemo(
     () => groups.slice(groupPage * GROUP_PAGE_SIZE, groupPage * GROUP_PAGE_SIZE + GROUP_PAGE_SIZE),
     [groups, groupPage],
   );
   const downloadPages = useMemo<DownloadPage[]>(() => makeDownloadPages(products), [products]);
   const validationMessages = useMemo(() => validateProducts(products), [products]);
+
+  useEffect(() => {
+    if (selectedGroupIndex < 0) return;
+    const nextPage = Math.floor(selectedGroupIndex / GROUP_PAGE_SIZE);
+    setGroupPage((current) => (current === nextPage ? current : nextPage));
+  }, [selectedGroupIndex]);
 
   async function uploadFile(file?: File) {
     if (!file) return;
@@ -90,7 +143,7 @@ export default function Page() {
         setProducts(response.products);
         setSourceRowCount(response.rows.length);
         setStep("category");
-        setSelectedGroup("");
+        setSelectedProductId("");
         setGroupPage(0);
         setStatus(
           `${response.sheetName} 시트 ${response.headerRow}행을 제목으로 인식했습니다. ${response.products.length}개 상품을 읽었습니다.`,
@@ -119,13 +172,15 @@ export default function Page() {
 
   function selectStep(nextStep: StepId) {
     setStep(nextStep);
-    setSelectedGroup("");
+    setSelectedProductId("");
     setGroupPage(0);
   }
 
   function patchCurrentGroup(patch: Partial<Product>) {
     if (!currentGroup) return;
+    const anchorId = currentGroup.items[0]?.id ?? "";
     const ids = new Set(currentGroup.items.map((item) => item.id));
+    setSelectedProductId(anchorId);
     setProducts((current) => current.map((product) => (ids.has(product.id) ? { ...product, ...patch } : product)));
     setStatus(`${currentGroup.items.length}개 상품에 적용했습니다.`);
   }
@@ -237,7 +292,13 @@ export default function Page() {
               label="카테고리 코드"
               value={first.categoryCode}
               numeric
-              onApply={(value) => patchCurrentGroup({ categoryCode: digits(value), categoryGroup: `카테고리 ${digits(value) || "미입력"}` })}
+              onApply={(value) => {
+                const categoryCode = digits(value);
+                patchCurrentGroup({
+                  categoryCode,
+                  categoryGroup: categoryCode ? `카테고리 ${categoryCode}` : "카테고리 미입력",
+                });
+              }}
             />
             <ApplyField label="옥션 노출코드" value={first.auctionExposureCode} numeric onApply={(value) => patchCurrentGroup({ auctionExposureCode: digits(value) })} />
             <ApplyField label="G마켓 노출코드" value={first.gmarketExposureCode} numeric onApply={(value) => patchCurrentGroup({ gmarketExposureCode: digits(value) })} />
@@ -396,7 +457,7 @@ export default function Page() {
                       key={group.name}
                       type="button"
                       className={(currentGroup?.name ?? "") === group.name ? "selected" : ""}
-                      onClick={() => setSelectedGroup(group.name)}
+                      onClick={() => setSelectedProductId(group.items[0]?.id ?? "")}
                     >
                       <strong>{group.name}</strong>
                       <span>{group.items.length.toLocaleString()}개</span>
