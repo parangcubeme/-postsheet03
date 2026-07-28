@@ -125,6 +125,8 @@ try {
   console.log("PASS: 그룹 선택 유지, 같은 카테고리 병합, 화면 클릭, 엑셀 업로드와 다운로드를 확인했습니다.");
 } catch (error) {
   await page.screenshot({ path: path.join(outputDir, "failure.png"), fullPage: true });
+  const details = error instanceof Error ? error.stack || error.message : String(error);
+  await writeFile(path.join(outputDir, "failure.txt"), `${details}\n`, "utf8");
   throw error;
 } finally {
   await browser.close();
