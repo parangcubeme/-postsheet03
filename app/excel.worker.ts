@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import * as XLSX from "xlsx";
+import { makeProducts } from "./excel";
 import type { Row, WorkerResponse } from "./types";
 
 const PRODUCT_HEADERS = ["상품명", "제품명", "상품이름", "품명", "상품 명"];
@@ -63,8 +64,9 @@ self.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       .slice(headerIndex + 1)
       .map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])))
       .filter((row) => Object.values(row).some((value) => normalize(value)));
+    const products = makeProducts(rows);
 
-    const response: WorkerResponse = { ok: true, rows, sheetName, headerRow: headerIndex + 1 };
+    const response: WorkerResponse = { ok: true, rows, products, sheetName, headerRow: headerIndex + 1 };
     self.postMessage(response);
   } catch (error) {
     const response: WorkerResponse = {
