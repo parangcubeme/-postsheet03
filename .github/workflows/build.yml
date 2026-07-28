@@ -1,4 +1,4 @@
-name: Build verification
+name: Build and browser verification
 
 on:
   push:
@@ -6,18 +6,63 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-verification-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - name: Install dependencies
+
+      - name: Install application dependencies
         run: npm install
-      - name: Build
+
+      - name: Build production application
         run: npm run build
+
+      - name: Install Chromium test runtime
+        run: |
+          npm install --no-save playwright@1.54.2
+          npx playwright install chromium
+
+      - name: Verify real browser interactions and Excel downloads
+        run: |
+          npm run start -- -p 3000 > /tmp/postsheet03-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          READY=0
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3000 > /dev/null; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            cat /tmp/postsheet03-server.log
+            exit 1
+          fi
+
+          node tests/browser-smoke.mjs
+
+      - name: Upload browser verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-verification-results
+          path: test-results
+          if-no-files-found: ignore
