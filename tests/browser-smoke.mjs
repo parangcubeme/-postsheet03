@@ -73,17 +73,23 @@ try {
   await page.getByText("3개 묶음").waitFor({ state: "visible" });
 
   const categoryField = page.locator("label.apply-field").filter({ hasText: "카테고리 코드" });
+  const applyCategory = async () => {
+    const input = categoryField.locator("input");
+    await input.fill("50000001");
+    await input.press("Tab");
+    await page.waitForTimeout(100);
+    assert.equal(await input.inputValue(), "50000001");
+    await categoryField.getByRole("button", { name: "이 묶음에 적용" }).click();
+  };
 
   await page.locator(".group-list button").filter({ hasText: "의류 예상" }).click();
-  await categoryField.locator("input").fill("50000001");
-  await categoryField.getByRole("button", { name: "이 묶음에 적용" }).click();
+  await applyCategory();
   await page.locator(".editor-heading h3").filter({ hasText: "카테고리 50000001" }).waitFor({ state: "visible" });
   await page.locator(".editor-heading").getByText("800개 상품").waitFor({ state: "visible" });
   assert.equal(await page.locator(".group-list button.selected strong").textContent(), "카테고리 50000001");
 
   await page.locator(".group-list button").filter({ hasText: "가공식품 예상" }).click();
-  await categoryField.locator("input").fill("50000001");
-  await categoryField.getByRole("button", { name: "이 묶음에 적용" }).click();
+  await applyCategory();
   await page.getByText("1개 묶음").waitFor({ state: "visible" });
   await page.locator(".editor-heading").getByText("1,200개 상품").waitFor({ state: "visible" });
   assert.equal(await page.locator(".group-list button.selected strong").textContent(), "카테고리 50000001");
