@@ -83,12 +83,16 @@ try {
   };
 
   await page.locator(".group-list button").filter({ hasText: "의류 예상" }).click();
+  await page.locator(".editor-heading h3").filter({ hasText: "의류 예상" }).waitFor({ state: "visible" });
+  await page.waitForTimeout(100);
   await applyCategory();
   await page.locator(".editor-heading h3").filter({ hasText: "카테고리 50000001" }).waitFor({ state: "visible" });
   await page.locator(".editor-heading").getByText("800개 상품").waitFor({ state: "visible" });
   assert.equal(await page.locator(".group-list button.selected strong").textContent(), "카테고리 50000001");
 
   await page.locator(".group-list button").filter({ hasText: "가공식품 예상" }).click();
+  await page.locator(".editor-heading h3").filter({ hasText: "가공식품 예상" }).waitFor({ state: "visible" });
+  await page.waitForTimeout(100);
   await applyCategory();
   await page.getByText("1개 묶음").waitFor({ state: "visible" });
   await page.locator(".editor-heading").getByText("1,200개 상품").waitFor({ state: "visible" });
