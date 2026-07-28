@@ -51,6 +51,7 @@ export type DownloadPage = {
 export type WorkerSuccess = {
   ok: true;
   rows: Row[];
+  products: Product[];
   sheetName: string;
   headerRow: number;
 };
