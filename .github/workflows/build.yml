@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,10 +28,10 @@ jobs:
       - name: Build production application
         run: npm run build
 
-      - name: Install browser test runtime
+      - name: Install Chromium test runtime
         run: |
           npm install --no-save playwright@1.54.2
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
 
       - name: Verify real browser interactions and Excel downloads
         run: |
