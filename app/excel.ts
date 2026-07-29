@@ -3,7 +3,7 @@ import type { DownloadPage, Product, ProductGroup, Row, StepId } from "./types";
 export const aliases = {
   productName: ["상품명", "제품명", "상품이름", "품명", "상품 명"],
   sellerCode: ["판매자 상품코드", "판매자상품코드", "상품코드", "자체상품코드", "관리코드", "품목코드", "판매자코드"],
-  basePrice: ["판매가", "판매가격", "상품가격", "상품 판매가", "공급가", "공급가격", "판매단가", "단가", "기준가격", "원가", "매입가", "소비자가", "정상가", "가격"],
+  basePrice: ["판매가", "A 판매가", "G 판매가", "판매가격", "상품가격", "상품 판매가", "공급가", "공급가격", "판매단가", "단가", "기준가격", "원가", "매입가", "소비자가", "정상가", "가격"],
   stock: ["재고수량", "재고", "수량", "판매가능수량", "A 재고", "G 재고"],
   mainImage: ["대표이미지", "대표이미지URL", "이미지1", "메인이미지", "이미지URL", "기본이미지"],
   detailHtml: ["상세설명", "상품설명", "상세HTML", "상품상세", "상세페이지", "상세이미지", "상품상세설명"],
@@ -27,6 +27,39 @@ export const esmHeaders = [
   "상품고시정보\n템플릿코드", "인증타입", "인증품목선택", "인증코드", "인증타입", "인증품목선택", "인증코드", "병행수입여부", "인증타입",
   "인증품목선택", "인증코드", "병행수입여부", "인증타입", "승인/신고번호", "원산지\n상품타입", "원산지\n지역타입", "원산지\n지역코드",
   "복수\n원산지여부", "사은품/덤 \n템플릿 코드", "사은품", "덤", "소비기한", "제조일자", "청소년구매\n불가여부", "부가세여부", "선물하기상품",
+];
+
+type CategoryPreset = {
+  label: string;
+  pattern: RegExp;
+  esmCategoryCode: string;
+  gmarketExposureCode: string;
+  auctionExposureCode: string;
+  productGroupCode: string;
+  noticeTemplateCode: string;
+};
+
+// 성원님이 제공한 실제 ESM 등록 파일에서 확인된 카테고리 조합입니다.
+// 순서는 화면 기준 ESM → G마켓 → 옥션이며, 더 구체적인 규칙을 먼저 검사합니다.
+const categoryPresets: CategoryPreset[] = [
+  {
+    label: "메이크업 스패출러",
+    pattern: /스패출러|스파츌라|스패츌러|파운데이션\s*믹싱|메이크업\s*스푼/i,
+    esmCategoryCode: "00090004000100150000",
+    gmarketExposureCode: "100000005200001764300009393",
+    auctionExposureCode: "18650400",
+    productGroupCode: "5",
+    noticeTemplateCode: "239479",
+  },
+  {
+    label: "파우치·이너백·소품정리",
+    pattern: /파우치|이너백|백인백|내부가방|화장품정리|메이크업\s*박스|브러쉬\s*보관함|브러쉬파우치|보석함|쥬얼리\s*정리|미니백|고데기\s*보관|고데기\s*파우치/i,
+    esmCategoryCode: "00090004000100150000",
+    gmarketExposureCode: "100000049200000787300009543",
+    auctionExposureCode: "30110400",
+    productGroupCode: "5",
+    noticeTemplateCode: "239479",
+  },
 ];
 
 export function cleanKey(value: unknown): string {
@@ -60,13 +93,21 @@ export function pick(row: Row, names: string[]): unknown {
   return "";
 }
 
+function detectCategoryPreset(name: string): CategoryPreset | undefined {
+  return categoryPresets.find((preset) => preset.pattern.test(name));
+}
+
 function detectGroup(name: string): { group: string; productGroupCode: string } {
   const text = name.toLowerCase();
-  if (/티셔츠|셔츠|바지|원피스|의류/.test(text)) return { group: "의류 예상", productGroupCode: "1" };
-  if (/신발|구두|운동화|샌들/.test(text)) return { group: "신발 예상", productGroupCode: "2" };
-  if (/가방|백팩|파우치/.test(text)) return { group: "가방 예상", productGroupCode: "3" };
-  if (/만두|과자|라면|커피|음료|빵|떡/.test(text)) return { group: "가공식품 예상", productGroupCode: "21" };
-  return { group: "미분류", productGroupCode: "35" };
+  if (/티셔츠|셔츠|바지|원피스|의류/.test(text)) return { group: "의류 확인 필요", productGroupCode: "1" };
+  if (/신발|구두|운동화|샌들/.test(text)) return { group: "신발 확인 필요", productGroupCode: "2" };
+  if (/가방|백팩|파우치/.test(text)) return { group: "가방·파우치 확인 필요", productGroupCode: "3" };
+  if (/만두|과자|라면|커피|음료|빵|떡/.test(text)) return { group: "가공식품 확인 필요", productGroupCode: "21" };
+  return { group: "미분류 제품군", productGroupCode: "35" };
+}
+
+export function hasCompleteEsmCategory(product: Product): boolean {
+  return Boolean(product.categoryCode && product.gmarketExposureCode && product.auctionExposureCode);
 }
 
 export function makeProducts(rows: Row[]): Product[] {
@@ -76,8 +117,23 @@ export function makeProducts(rows: Row[]): Product[] {
     const basePrice = numberValue(pick(raw, aliases.basePrice));
     if (!productName || basePrice <= 0) return;
 
-    const existingCategory = digits(pickExact(raw, "카테고리코드"));
+    const preset = detectCategoryPreset(productName);
     const detected = detectGroup(productName);
+    const sourceCategoryCode = digits(pickExact(raw, "카테고리코드"));
+    const sourceAuctionCode = digits(pickExact(raw, "A 노출코드"));
+    const sourceGmarketCode = digits(pickExact(raw, "G 노출코드"));
+    const categoryCode = sourceCategoryCode || preset?.esmCategoryCode || "";
+    const gmarketExposureCode = sourceGmarketCode || preset?.gmarketExposureCode || "";
+    const auctionExposureCode = sourceAuctionCode || preset?.auctionExposureCode || "";
+    const categoryComplete = Boolean(categoryCode && gmarketExposureCode && auctionExposureCode);
+    const hadSourceCategory = Boolean(sourceCategoryCode || sourceAuctionCode || sourceGmarketCode);
+    const categoryGroup = categoryComplete
+      ? hadSourceCategory
+        ? `기존분류 · ${categoryCode}`
+        : `자동분류 · ${preset?.label ?? categoryCode}`
+      : preset
+        ? `부분 자동분류 · ${preset.label}`
+        : detected.group;
     const shippingGroup = ["출하지 코드", "배송정책번호", "A 발송정책", "G 발송정책"]
       .map((key) => normalize(pickExact(raw, key)))
       .filter(Boolean)
@@ -97,12 +153,12 @@ export function makeProducts(rows: Row[]): Product[] {
       shippingFee: numberValue(pick(raw, aliases.shippingFee)),
       vatType: normalize(pick(raw, aliases.vatType)),
       originDirect: normalize(pick(raw, aliases.originDirect)),
-      categoryGroup: existingCategory ? `기존 카테고리 ${existingCategory}` : detected.group,
-      categoryCode: existingCategory,
-      auctionExposureCode: digits(pickExact(raw, "A 노출코드")),
-      gmarketExposureCode: digits(pickExact(raw, "G 노출코드")),
-      productGroupCode: digits(pickExact(raw, "상품군 코드")) || detected.productGroupCode,
-      noticeTemplateCode: digits(pickExact(raw, "상품고시정보 템플릿코드")) || "239479",
+      categoryGroup,
+      categoryCode,
+      auctionExposureCode,
+      gmarketExposureCode,
+      productGroupCode: digits(pickExact(raw, "상품군 코드")) || preset?.productGroupCode || detected.productGroupCode,
+      noticeTemplateCode: digits(pickExact(raw, "상품고시정보 템플릿코드")) || preset?.noticeTemplateCode || "",
       originProductType: normalize(pickExact(raw, "원산지 상품타입")) || "해당없음",
       originRegionType: normalize(pickExact(raw, "원산지 지역타입")) || "알수없음",
       originRegionCode: digits(pick(raw, aliases.originCode)),
@@ -163,12 +219,20 @@ export function makeDownloadPages(products: Product[]): DownloadPage[] {
 
 export function validateProducts(products: Product[]): string[] {
   const messages: string[] = [];
-  const missingCategory = products.filter((item) => !item.categoryCode).length;
+  const missingEsmCategory = products.filter((item) => !item.categoryCode).length;
+  const missingGmarketCategory = products.filter((item) => !item.gmarketExposureCode).length;
+  const missingAuctionCategory = products.filter((item) => !item.auctionExposureCode).length;
+  const missingProductGroup = products.filter((item) => !item.productGroupCode).length;
+  const missingNotice = products.filter((item) => !item.noticeTemplateCode).length;
   const missingImage = products.filter((item) => !item.mainImage).length;
   const missingDetail = products.filter((item) => !item.detailHtml).length;
   const missingOrigin = products.filter((item) => !item.originRegionCode).length;
   const missingShipping = products.filter((item) => !item.departureCode || !item.shippingPolicyNumber || !item.returnAddressCode).length;
-  if (missingCategory) messages.push(`카테고리코드 미입력 ${missingCategory}개`);
+  if (missingEsmCategory) messages.push(`ESM 카테고리코드 미입력 ${missingEsmCategory}개`);
+  if (missingGmarketCategory) messages.push(`G마켓 노출코드 미입력 ${missingGmarketCategory}개`);
+  if (missingAuctionCategory) messages.push(`옥션 노출코드 미입력 ${missingAuctionCategory}개`);
+  if (missingProductGroup) messages.push(`상품군 코드 미입력 ${missingProductGroup}개`);
+  if (missingNotice) messages.push(`상품고시정보 템플릿코드 미입력 ${missingNotice}개`);
   if (missingImage) messages.push(`대표이미지 미입력 ${missingImage}개`);
   if (missingDetail) messages.push(`상세설명 미입력 ${missingDetail}개`);
   if (missingOrigin) messages.push(`원산지코드 미입력 ${missingOrigin}개`);
