@@ -29,6 +29,9 @@ export const esmHeaders = [
   "복수\n원산지여부", "사은품/덤 \n템플릿 코드", "사은품", "덤", "소비기한", "제조일자", "청소년구매\n불가여부", "부가세여부", "선물하기상품",
 ];
 
+const ESM_COLUMN_COUNT = 64;
+const ESM_DATA_START_ROW = 8;
+
 type CategoryPreset = {
   label: string;
   pattern: RegExp;
@@ -262,19 +265,40 @@ export function validateProducts(products: Product[]): string[] {
   return [...counts.entries()].map(([issue, count]) => `${issue} 미입력 ${count}개`);
 }
 
-export function makeEsmRows(products: Product[], auctionId: string, gmarketId: string): unknown[][] {
-  const top: unknown[][] = [
-    ["▶가이드 바로가기", null, " ※ 문서버전 : NEW 2.0", null, "필독▶ 일반배송 전용 파일입니다. 상품정보는 8행부터 입력됩니다.", ...Array(59).fill(null)],
-    [null, "상품기본정보", ...Array(26).fill(null), "배송정보", ...Array(8).fill(null), "상품고시정보", ...Array(25).fill(null)],
-    [null, ...esmHeaders],
-    [null, ...esmHeaders.map(() => "")],
-    [null, ...esmHeaders.map(() => "")],
-    [null, ...esmHeaders.map(() => "")],
-    [null, ...esmHeaders.map(() => "")],
-  ];
+function makeBlankEsmRow(): unknown[] {
+  return Array(ESM_COLUMN_COUNT).fill("");
+}
 
+function makeEsmTemplateRows(): unknown[][] {
+  const guideRow = makeBlankEsmRow();
+  guideRow[0] = "▶가이드 바로가기";
+  guideRow[2] = "※ 문서버전 : NEW 2.0";
+  guideRow[4] = `필독▶ 일반배송 전용 파일입니다. 상품정보는 ${ESM_DATA_START_ROW}행부터 입력됩니다.`;
+
+  const sectionRow = makeBlankEsmRow();
+  sectionRow[1] = "상품기본정보";
+  sectionRow[28] = "배송정보";
+  sectionRow[37] = "상품고시정보";
+
+  const headerRow = makeBlankEsmRow();
+  esmHeaders.forEach((header, index) => {
+    headerRow[index + 1] = header;
+  });
+
+  return [
+    guideRow,
+    sectionRow,
+    headerRow,
+    makeBlankEsmRow(),
+    makeBlankEsmRow(),
+    makeBlankEsmRow(),
+    makeBlankEsmRow(),
+  ];
+}
+
+export function makeEsmRows(products: Product[], auctionId: string, gmarketId: string): unknown[][] {
   const body = products.map((product) => {
-    const row = Array(64).fill("");
+    const row = makeBlankEsmRow();
     row[1] = "옥션/G마켓";
     row[2] = auctionId;
     row[3] = gmarketId;
@@ -316,5 +340,6 @@ export function makeEsmRows(products: Product[], auctionId: string, gmarketId: s
     row[63] = "가능";
     return row;
   });
-  return [...top, ...body];
+
+  return [...makeEsmTemplateRows(), ...body];
 }
