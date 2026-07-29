@@ -130,9 +130,13 @@ try {
   assert.equal(esmMatrix[7][2], "auction-test");
   assert.equal(esmMatrix[7][3], "gmarket-test");
 
+  await page.locator('input[type="file"]').setInputFiles(esmPath);
+  await page.getByText(/500개 상품을 읽었습니다/).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator(".file-summary").getByText(/변환 가능 상품 500개/).waitFor({ state: "visible" });
+
   assert.deepEqual(browserErrors, [], `브라우저 오류가 발생했습니다:\n${browserErrors.join("\n")}`);
   await writeFile(path.join(outputDir, "browser-smoke.txt"), "PASS\n", "utf8");
-  console.log("PASS: 그룹 선택 유지, 같은 카테고리 병합, 화면 클릭, 엑셀 업로드와 다운로드를 확인했습니다.");
+  console.log("PASS: 화면 클릭, 원본 업로드, 다운로드, 프로그램 생성 ESM 파일 재업로드를 확인했습니다.");
 } catch (error) {
   await page.screenshot({ path: path.join(outputDir, "failure.png"), fullPage: true });
   const details = error instanceof Error ? error.stack || error.message : String(error);
