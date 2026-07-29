@@ -17,6 +17,7 @@ export type Product = {
   vatType: string;
   originDirect: string;
   categoryGroup: string;
+  categoryTemplateCode: string;
   categoryCode: string;
   auctionExposureCode: string;
   gmarketExposureCode: string;
