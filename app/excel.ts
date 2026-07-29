@@ -39,8 +39,8 @@ type CategoryPreset = {
   noticeTemplateCode: string;
 };
 
-// 성원님이 제공한 실제 ESM 등록 파일에서 확인된 카테고리 조합입니다.
-// 순서는 화면 기준 ESM → G마켓 → 옥션이며, 더 구체적인 규칙을 먼저 검사합니다.
+// 성원님이 제공한 실제 ESM 전용 엑셀 21개 상품에서 확인한 분류 조합입니다.
+// 입력 의미는 ESM → G마켓 → 옥션 순서이며, 공식 ESM 출력 열에는 옥션(A) → G마켓(G) 순서로 배치합니다.
 const categoryPresets: CategoryPreset[] = [
   {
     label: "메이크업 스패출러",
@@ -48,12 +48,12 @@ const categoryPresets: CategoryPreset[] = [
     esmCategoryCode: "00090004000100150000",
     gmarketExposureCode: "100000005200001764300009393",
     auctionExposureCode: "18650400",
-    productGroupCode: "5",
+    productGroupCode: "35",
     noticeTemplateCode: "239479",
   },
   {
     label: "파우치·이너백·소품정리",
-    pattern: /파우치|이너백|백인백|내부가방|화장품정리|메이크업\s*박스|브러쉬\s*보관함|브러쉬파우치|보석함|쥬얼리\s*정리|미니백|고데기\s*보관|고데기\s*파우치/i,
+    pattern: /파우치|이너백|백인백|내부가방|화장품정리|메이크업\s*박스|브러쉬\s*보관함|브러쉬파우치|보석함|쥬얼리\s*정리|미니백|고데기\s*보관|고데기\s*파우치|케이블\s*정리|생리대\s*수납/i,
     esmCategoryCode: "00090004000100150000",
     gmarketExposureCode: "100000049200000787300009543",
     auctionExposureCode: "30110400",
@@ -110,6 +110,41 @@ export function hasCompleteEsmCategory(product: Product): boolean {
   return Boolean(product.categoryCode && product.gmarketExposureCode && product.auctionExposureCode);
 }
 
+export function hasCompleteNotice(product: Product): boolean {
+  return Boolean(product.productGroupCode && product.noticeTemplateCode);
+}
+
+export function hasCompleteOrigin(product: Product): boolean {
+  return Boolean(product.originProductType && product.originRegionType && product.originRegionCode && product.multipleOrigins);
+}
+
+export function hasCompleteShipping(product: Product): boolean {
+  return Boolean(
+    product.departureCode
+      && product.shippingPolicyNumber
+      && product.returnAddressCode
+      && product.auctionShippingPolicy
+      && product.gmarketShippingPolicy
+      && product.courierCode,
+  );
+}
+
+export function getProductIssues(product: Product): string[] {
+  const issues: string[] = [];
+  if (!product.productName) issues.push("상품명");
+  if (!product.categoryCode) issues.push("ESM 카테고리");
+  if (!product.gmarketExposureCode) issues.push("G마켓 카테고리");
+  if (!product.auctionExposureCode) issues.push("옥션 카테고리");
+  if (!product.productGroupCode) issues.push("상품군 코드");
+  if (!product.noticeTemplateCode) issues.push("고시정보 코드");
+  if (!product.mainImage) issues.push("대표이미지");
+  if (!product.detailHtml) issues.push("상세설명");
+  if (!hasCompleteOrigin(product)) issues.push("원산지");
+  if (!hasCompleteShipping(product)) issues.push("배송정책");
+  if (!(product.finalPrice > 0)) issues.push("판매가");
+  return issues;
+}
+
 export function makeProducts(rows: Row[]): Product[] {
   const products: Product[] = [];
   rows.forEach((raw, index) => {
@@ -134,7 +169,7 @@ export function makeProducts(rows: Row[]): Product[] {
       : preset
         ? `부분 자동분류 · ${preset.label}`
         : detected.group;
-    const shippingGroup = ["출하지 코드", "배송정책번호", "A 발송정책", "G 발송정책"]
+    const shippingGroup = ["출하지 코드", "배송정책번호", "반품/교환 주소 코드", "A 발송정책", "G 발송정책"]
       .map((key) => normalize(pickExact(raw, key)))
       .filter(Boolean)
       .join(" / ") || "배송정보 미입력";
@@ -162,7 +197,7 @@ export function makeProducts(rows: Row[]): Product[] {
       originProductType: normalize(pickExact(raw, "원산지 상품타입")) || "해당없음",
       originRegionType: normalize(pickExact(raw, "원산지 지역타입")) || "알수없음",
       originRegionCode: digits(pick(raw, aliases.originCode)),
-      multipleOrigins: normalize(pickExact(raw, "복수 원산지여부")) || "단일원산지",
+      multipleOrigins: normalize(pickExact(raw, "복수 원산지여부")) || "N",
       shippingGroup,
       departureCode: digits(pickExact(raw, "출하지 코드")),
       shippingPolicyNumber: digits(pickExact(raw, "배송정책번호")),
@@ -182,7 +217,7 @@ export function groupProducts(products: Product[], step: StepId): ProductGroup[]
     const key = step === "category"
       ? product.categoryGroup
       : step === "notice"
-        ? `${product.categoryCode || "카테고리 미입력"} / ${product.noticeTemplateCode || "고시 미입력"}`
+        ? `${product.categoryGroup} / ${product.productGroupCode || "상품군 미입력"} / ${product.noticeTemplateCode || "고시 미입력"}`
         : step === "origin"
           ? product.originRegionCode || "원산지 미입력"
           : step === "shipping"
@@ -218,26 +253,13 @@ export function makeDownloadPages(products: Product[]): DownloadPage[] {
 }
 
 export function validateProducts(products: Product[]): string[] {
-  const messages: string[] = [];
-  const missingEsmCategory = products.filter((item) => !item.categoryCode).length;
-  const missingGmarketCategory = products.filter((item) => !item.gmarketExposureCode).length;
-  const missingAuctionCategory = products.filter((item) => !item.auctionExposureCode).length;
-  const missingProductGroup = products.filter((item) => !item.productGroupCode).length;
-  const missingNotice = products.filter((item) => !item.noticeTemplateCode).length;
-  const missingImage = products.filter((item) => !item.mainImage).length;
-  const missingDetail = products.filter((item) => !item.detailHtml).length;
-  const missingOrigin = products.filter((item) => !item.originRegionCode).length;
-  const missingShipping = products.filter((item) => !item.departureCode || !item.shippingPolicyNumber || !item.returnAddressCode).length;
-  if (missingEsmCategory) messages.push(`ESM 카테고리코드 미입력 ${missingEsmCategory}개`);
-  if (missingGmarketCategory) messages.push(`G마켓 노출코드 미입력 ${missingGmarketCategory}개`);
-  if (missingAuctionCategory) messages.push(`옥션 노출코드 미입력 ${missingAuctionCategory}개`);
-  if (missingProductGroup) messages.push(`상품군 코드 미입력 ${missingProductGroup}개`);
-  if (missingNotice) messages.push(`상품고시정보 템플릿코드 미입력 ${missingNotice}개`);
-  if (missingImage) messages.push(`대표이미지 미입력 ${missingImage}개`);
-  if (missingDetail) messages.push(`상세설명 미입력 ${missingDetail}개`);
-  if (missingOrigin) messages.push(`원산지코드 미입력 ${missingOrigin}개`);
-  if (missingShipping) messages.push(`배송정책 필수값 미입력 ${missingShipping}개`);
-  return messages;
+  const counts = new Map<string, number>();
+  for (const product of products) {
+    for (const issue of getProductIssues(product)) {
+      counts.set(issue, (counts.get(issue) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].map(([issue, count]) => `${issue} 미입력 ${count}개`);
 }
 
 export function makeEsmRows(products: Product[], auctionId: string, gmarketId: string): unknown[][] {
