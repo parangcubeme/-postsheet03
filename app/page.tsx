@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import {
   digits,
   groupProducts,
+  hasCompleteEsmCategory,
   makeDownloadPages,
   makeEsmRows,
   naverHeaders,
@@ -47,9 +48,8 @@ function groupByName(products: Product[], getName: (product: Product) => string)
 
 function makeEditorGroups(products: Product[], step: StepId): ProductGroup[] {
   if (step === "category") {
-    return groupByName(products, (product) =>
-      product.categoryCode ? `카테고리 ${product.categoryCode}` : product.categoryGroup || "카테고리 미입력",
-    );
+    const unresolved = products.filter((product) => !hasCompleteEsmCategory(product));
+    return groupByName(unresolved, (product) => product.categoryGroup || "미분류 제품군");
   }
 
   if (step === "shipping") {
@@ -99,6 +99,11 @@ export default function Page() {
   }, []);
 
   const groups = useMemo(() => makeEditorGroups(products, step), [products, step]);
+  const categoryManualCount = useMemo(
+    () => products.filter((product) => !hasCompleteEsmCategory(product)).length,
+    [products],
+  );
+  const categoryReadyCount = products.length - categoryManualCount;
   const selectedGroupIndex = selectedProductId
     ? groups.findIndex((group) => group.items.some((item) => item.id === selectedProductId))
     : groups.length
@@ -140,13 +145,15 @@ export default function Page() {
           return;
         }
 
+        const manualCount = response.products.filter((product) => !hasCompleteEsmCategory(product)).length;
+        const readyCount = response.products.length - manualCount;
         setProducts(response.products);
         setSourceRowCount(response.rows.length);
         setStep("category");
         setSelectedProductId("");
         setGroupPage(0);
         setStatus(
-          `${response.sheetName} 시트 ${response.headerRow}행을 제목으로 인식했습니다. ${response.products.length}개 상품을 읽었습니다.`,
+          `${response.sheetName} 시트 ${response.headerRow}행을 제목으로 인식했습니다. ${response.products.length}개 상품을 읽었습니다. 카테고리 자동·기존 입력 ${readyCount}개, 직접 확인 ${manualCount}개입니다.`,
         );
         setBusy(false);
         worker.terminate();
@@ -261,6 +268,12 @@ export default function Page() {
       return;
     }
 
+    const missingCategoryCount = page.items.filter((product) => !hasCompleteEsmCategory(product)).length;
+    if (missingCategoryCount) {
+      setStatus(`이 파일에 ESM·G마켓·옥션 카테고리가 덜 입력된 상품이 ${missingCategoryCount}개 있습니다. 1단계에서 먼저 확인해 주세요.`);
+      return;
+    }
+
     setBusy(true);
     setStatus(`${page.items.length}개 상품의 ESM 엑셀을 만들고 있습니다.`);
 
@@ -287,21 +300,22 @@ export default function Page() {
     if (step === "category") {
       return (
         <GroupEditor groupName={currentGroup.name} items={currentGroup.items}>
+          <p className="description">카테고리는 ESM → G마켓 → 옥션 순서로 입력합니다. 이미 자동 입력된 값은 그대로 두고 빈 값만 채우면 됩니다.</p>
           <div className="form-grid">
             <ApplyField
-              label="카테고리 코드"
+              label="1. ESM 카테고리 코드"
               value={first.categoryCode}
               numeric
               onApply={(value) => {
                 const categoryCode = digits(value);
                 patchCurrentGroup({
                   categoryCode,
-                  categoryGroup: categoryCode ? `카테고리 ${categoryCode}` : "카테고리 미입력",
+                  categoryGroup: categoryCode ? `수동분류 · ${categoryCode}` : "미분류 제품군",
                 });
               }}
             />
-            <ApplyField label="옥션 노출코드" value={first.auctionExposureCode} numeric onApply={(value) => patchCurrentGroup({ auctionExposureCode: digits(value) })} />
-            <ApplyField label="G마켓 노출코드" value={first.gmarketExposureCode} numeric onApply={(value) => patchCurrentGroup({ gmarketExposureCode: digits(value) })} />
+            <ApplyField label="2. G마켓 노출코드" value={first.gmarketExposureCode} numeric onApply={(value) => patchCurrentGroup({ gmarketExposureCode: digits(value) })} />
+            <ApplyField label="3. 옥션 노출코드" value={first.auctionExposureCode} numeric onApply={(value) => patchCurrentGroup({ auctionExposureCode: digits(value) })} />
             <ApplyField label="상품군 코드" value={first.productGroupCode} numeric onApply={(value) => patchCurrentGroup({ productGroupCode: digits(value) })} />
           </div>
         </GroupEditor>
@@ -443,14 +457,22 @@ export default function Page() {
               ))}
             </nav>
 
+            {products.length > 0 && (
+              <div className={categoryManualCount ? "status" : "success-box"}>
+                카테고리 3종 자동·기존 입력 {categoryReadyCount.toLocaleString()}개 · 직접 확인 {categoryManualCount.toLocaleString()}개 · 입력 순서 ESM → G마켓 → 옥션
+              </div>
+            )}
+
             {products.length === 0 ? (
               <div className="empty-box">먼저 상품 엑셀을 업로드해 주세요.</div>
+            ) : step === "category" && groups.length === 0 ? (
+              <div className="success-box">모든 상품의 ESM·G마켓·옥션 카테고리가 입력되었습니다. 다음 단계로 이동해 주세요.</div>
             ) : ["category", "notice", "origin", "shipping"].includes(step) ? (
               <div className="group-workspace">
                 <aside className="group-list">
                   <div className="group-list-head">
-                    <strong>{groups.length.toLocaleString()}개 묶음</strong>
-                    <span>{products.length.toLocaleString()}개 상품</span>
+                    <strong>{step === "category" ? `${groups.length.toLocaleString()}개 직접 확인 묶음` : `${groups.length.toLocaleString()}개 묶음`}</strong>
+                    <span>{step === "category" ? `${categoryManualCount.toLocaleString()}개 상품` : `${products.length.toLocaleString()}개 상품`}</span>
                   </div>
                   {visibleGroups.map((group) => (
                     <button
@@ -519,12 +541,15 @@ export default function Page() {
                   </div>
                   <p className="description">카테고리별 최대 500개씩 나눕니다. ZIP 압축은 사용하지 않습니다.</p>
                   <div className="download-list">
-                    {downloadPages.map((page) => (
-                      <button key={page.key} type="button" disabled={busy} onClick={() => void downloadEsmPage(page)}>
-                        <strong>카테고리 {page.category}</strong>
-                        <span>{page.page}페이지 · {page.items.length.toLocaleString()}개 다운로드</span>
-                      </button>
-                    ))}
+                    {downloadPages.map((page) => {
+                      const categoryIncomplete = page.items.some((product) => !hasCompleteEsmCategory(product));
+                      return (
+                        <button key={page.key} type="button" disabled={busy || categoryIncomplete} onClick={() => void downloadEsmPage(page)}>
+                          <strong>카테고리 {page.category}</strong>
+                          <span>{categoryIncomplete ? "ESM·G마켓·옥션 코드 확인 필요" : `${page.page}페이지 · ${page.items.length.toLocaleString()}개 다운로드`}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </section>
               </div>
