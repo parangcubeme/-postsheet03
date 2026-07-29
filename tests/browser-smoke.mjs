@@ -20,12 +20,17 @@ const commonHeaders = [
   "A 노출코드",
   "상품군 코드",
   "상품고시정보 템플릿코드",
+  "원산지 상품타입",
+  "원산지 지역타입",
   "원산지코드",
+  "복수 원산지여부",
   "출하지 코드",
   "배송정책번호",
   "반품/교환 주소 코드",
   "A 발송정책",
   "G 발송정책",
+  "택배사 코드",
+  "반품/교환 배송비",
 ];
 
 const autoRows = [
@@ -44,12 +49,17 @@ const autoRows = [
     "",
     "",
     "",
-    "03",
-    "100001",
-    "200001",
-    "300001",
-    "400001",
-    "500001",
+    "해당없음",
+    "알수없음",
+    "04",
+    "N",
+    "23962201",
+    "60785",
+    "47397781",
+    "14",
+    "15",
+    "10013",
+    "20000",
   ],
   [
     "메이크업 스패출러 파운데이션 믹싱 스파츌라",
@@ -63,12 +73,17 @@ const autoRows = [
     "",
     "",
     "",
-    "03",
-    "100001",
-    "200001",
-    "300001",
-    "400001",
-    "500001",
+    "해당없음",
+    "알수없음",
+    "04",
+    "N",
+    "23962201",
+    "60785",
+    "47397781",
+    "14",
+    "15",
+    "10013",
+    "20000",
   ],
   [
     "분류 규칙에 없는 테스트 제품",
@@ -82,12 +97,17 @@ const autoRows = [
     "",
     "",
     "",
-    "03",
-    "100001",
-    "200001",
-    "300001",
-    "400001",
-    "500001",
+    "해당없음",
+    "알수없음",
+    "04",
+    "N",
+    "23962201",
+    "60785",
+    "47397781",
+    "14",
+    "15",
+    "10013",
+    "20000",
   ],
 ];
 const autoPath = path.join(outputDir, "auto-category-products.xlsx");
@@ -122,12 +142,17 @@ for (let index = 1; index <= 1200; index += 1) {
     auctionCode,
     "5",
     "239479",
-    "03",
-    "100001",
-    "200001",
-    "300001",
-    "400001",
-    "500001",
+    "해당없음",
+    "알수없음",
+    "04",
+    "N",
+    "23962201",
+    "60785",
+    "47397781",
+    "14",
+    "15",
+    "10013",
+    "20000",
   ]);
 }
 const samplePath = path.join(outputDir, "sample-products.xlsx");
@@ -156,25 +181,31 @@ try {
   await phoneInput.fill("01012345678");
   assert.equal(await phoneInput.inputValue(), "01012345678");
 
-  // 제공 파일에서 확인한 파우치/스패출러 카테고리는 자동으로 채우고, 미분류만 남기는지 확인합니다.
+  // 제공한 ESM 카테고리 파일의 파우치/스패출러 규칙을 자동 적용하고, 미분류만 빨간색으로 남기는지 확인합니다.
   await page.locator('input[type="file"]').setInputFiles(autoPath);
   await page.getByRole("button", { name: "ESM · 옥션/G마켓" }).click();
-  await page.getByText(/3개 상품을 읽었습니다/).waitFor({ state: "visible", timeout: 60_000 });
-  await page.getByText(/자동·기존 입력 2개 · 직접 확인 1개/).waitFor({ state: "visible" });
-  await page.getByText("1개 직접 확인 묶음").waitFor({ state: "visible" });
+  await page.getByText(/3개 상품을 ESM 형식으로 옮겼습니다/).waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByText(/카테고리 자동·기존 입력 2개 \/ 직접 확인 1개/).waitFor({ state: "visible" });
+  await page.getByText(/고시정보 입력 2개 \/ 직접 확인 1개/).waitFor({ state: "visible" });
+  await page.locator(".group-list>button.needs-review").waitFor({ state: "visible" });
   const categoryLabels = await page.locator(".editor-fields label.apply-field > span").allTextContents();
-  assert.deepEqual(categoryLabels.slice(0, 3), [
+  assert.deepEqual(categoryLabels.map((value) => value.replace(" · 수정 필요", "")).slice(0, 3), [
     "1. ESM 카테고리 코드",
     "2. G마켓 노출코드",
     "3. 옥션 노출코드",
   ]);
 
-  // 대량 파일에서는 이미 입력된 400개를 제외하고 두 제품군만 직접 수정하게 합니다.
+  await page.getByRole("button", { name: "6. 최종검사·다운로드" }).click();
+  await page.locator(".review-table").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".review-table tbody tr").count(), 3);
+  assert.ok(await page.locator(".review-table .cell-error").count() > 0);
+
+  // 대량 파일에서는 이미 입력된 400개를 제외하고 두 제품군만 카테고리를 수정합니다.
   await page.locator('input[type="file"]').setInputFiles(samplePath);
-  await page.getByText(/1200개 상품을 읽었습니다/).waitFor({ state: "visible", timeout: 60_000 });
-  await page.getByText(/자동·기존 입력 400개 · 직접 확인 800개/).waitFor({ state: "visible" });
+  await page.getByText(/1200개 상품을 ESM 형식으로 옮겼습니다/).waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByText(/카테고리 자동·기존 입력 400개 \/ 직접 확인 800개/).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "1. 카테고리" }).click();
-  await page.getByText("2개 직접 확인 묶음").waitFor({ state: "visible" });
+  await page.getByText("2개 묶음").waitFor({ state: "visible" });
 
   const applyCurrentCategoryTriple = async () => {
     const values = [
@@ -195,16 +226,17 @@ try {
   await page.locator(".group-list button").filter({ hasText: "의류 확인 필요" }).click();
   await page.locator(".editor-heading h3").filter({ hasText: "의류 확인 필요" }).waitFor({ state: "visible" });
   await applyCurrentCategoryTriple();
-  await page.getByText("1개 직접 확인 묶음").waitFor({ state: "visible" });
-  await page.getByText(/자동·기존 입력 800개 · 직접 확인 400개/).waitFor({ state: "visible" });
+  await page.getByText(/카테고리 자동·기존 입력 800개 \/ 직접 확인 400개/).waitFor({ state: "visible" });
 
   await page.locator(".group-list button").filter({ hasText: "가공식품 확인 필요" }).click();
   await page.locator(".editor-heading h3").filter({ hasText: "가공식품 확인 필요" }).waitFor({ state: "visible" });
   await applyCurrentCategoryTriple();
-  await page.getByText(/자동·기존 입력 1,200개 · 직접 확인 0개/).waitFor({ state: "visible" });
+  await page.getByText(/카테고리 자동·기존 입력 1,200개 \/ 직접 확인 0개/).waitFor({ state: "visible" });
   await page.getByText(/모든 상품의 ESM·G마켓·옥션 카테고리가 입력되었습니다/).waitFor({ state: "visible" });
 
-  for (const label of ["2. 고시정보", "3. 원산지", "4. 배송정책", "5. 가격", "6. 최종검사·다운로드"]) {
+  await page.getByRole("button", { name: "2. 고시정보" }).click();
+  await page.getByText(/모든 상품의 상품군 코드와 고시정보 템플릿코드가 입력되었습니다/).waitFor({ state: "visible" });
+  for (const label of ["3. 원산지", "4. 배송정책", "5. 가격"]) {
     await page.getByRole("button", { name: label }).click();
   }
 
@@ -223,30 +255,38 @@ try {
   await page.locator("label.field").filter({ hasText: "옥션 판매자 ID" }).locator("input").fill("auction-test");
   await page.locator("label.field").filter({ hasText: "G마켓 판매자 ID" }).locator("input").fill("gmarket-test");
   await page.getByRole("button", { name: "6. 최종검사·다운로드" }).click();
-  await page.getByText("3개 파일").waitFor({ state: "visible" });
+  await page.getByText(/모든 상품의 필수항목이 입력되었습니다/).waitFor({ state: "visible" });
+  assert.equal(await page.locator(".review-table tbody tr").count(), 50);
+  assert.equal(await page.locator(".review-table .cell-error").count(), 0);
 
   const esmDownloadPromise = page.waitForEvent("download", { timeout: 60_000 });
-  await page.locator(".download-list button").first().click();
+  await page.getByRole("button", { name: /전체 1,200개 상품 한 엑셀 다운로드/ }).click();
   const esmDownload = await esmDownloadPromise;
+  assert.equal(esmDownload.suggestedFilename(), "ESM_전체상품_1200개.xlsx");
   const esmPath = path.join(outputDir, esmDownload.suggestedFilename());
   await esmDownload.saveAs(esmPath);
+
   const esmBook = XLSX.read(await readFile(esmPath));
-  const esmMatrix = XLSX.utils.sheet_to_json(esmBook.Sheets[esmBook.SheetNames[0]], { header: 1, defval: "" });
+  assert.deepEqual(esmBook.SheetNames, ["NEW 일반상품"]);
+  const esmMatrix = XLSX.utils.sheet_to_json(esmBook.Sheets["NEW 일반상품"], { header: 1, defval: "" });
+  assert.equal(esmMatrix.length, 1207);
   assert.equal(esmMatrix[7][4], "기존 분류 테스트 상품 1");
   assert.equal(esmMatrix[7][2], "auction-test");
   assert.equal(esmMatrix[7][3], "gmarket-test");
   assert.equal(esmMatrix[7][10], "50000001");
   assert.equal(esmMatrix[7][11], "30110400");
   assert.equal(esmMatrix[7][12], "100000049200000787300009543");
+  assert.equal(esmMatrix[1206][4], "만두 테스트 상품 1200");
 
+  // 프로그램이 만든 한 파일을 다시 올려도 전체 1,200개를 읽어야 합니다.
   await page.locator('input[type="file"]').setInputFiles(esmPath);
-  await page.getByText(/500개 상품을 읽었습니다/).waitFor({ state: "visible", timeout: 60_000 });
-  await page.getByText(/자동·기존 입력 500개 · 직접 확인 0개/).waitFor({ state: "visible" });
-  await page.locator(".file-summary").getByText(/변환 가능 상품 500개/).waitFor({ state: "visible" });
+  await page.getByText(/1200개 상품을 ESM 형식으로 옮겼습니다/).waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByText(/카테고리 자동·기존 입력 1,200개 \/ 직접 확인 0개/).waitFor({ state: "visible" });
+  await page.locator(".file-summary").getByText(/변환 가능 상품 1,200개/).waitFor({ state: "visible" });
 
   assert.deepEqual(browserErrors, [], `브라우저 오류가 발생했습니다:\n${browserErrors.join("\n")}`);
   await writeFile(path.join(outputDir, "browser-smoke.txt"), "PASS\n", "utf8");
-  console.log("PASS: 카테고리 자동입력, 미분류만 수정, ESM→G마켓→옥션 순서와 엑셀 업로드·다운로드를 확인했습니다.");
+  console.log("PASS: ESM 형식 자동 이동, 카테고리·고시 미입력 빨간 표시, 최종 뷰어와 한 엑셀 다운로드를 확인했습니다.");
 } catch (error) {
   await page.screenshot({ path: path.join(outputDir, "failure.png"), fullPage: true });
   const details = error instanceof Error ? error.stack || error.message : String(error);
