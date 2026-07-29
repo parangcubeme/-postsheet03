@@ -3,6 +3,7 @@ import type { Product, Row } from "./types";
 export type CategoryReference = {
   label: string;
   keywords: string[];
+  categoryTemplateCode: string;
   categoryCode: string;
   auctionExposureCode: string;
   gmarketExposureCode: string;
@@ -12,6 +13,7 @@ export type CategoryReference = {
 
 const aliases = {
   label: ["카테고리명", "카테고리", "분류명", "세분류", "소분류", "최종카테고리", "상품분류", "카테고리경로"],
+  categoryTemplateCode: ["카테고리템플릿코드", "카테고리 템플릿 코드", "ESM카테고리템플릿코드", "ESM 카테고리 템플릿 코드"],
   categoryCode: ["카테고리코드", "ESM카테고리코드", "ESM 카테고리 코드", "ESM코드"],
   auctionExposureCode: ["A노출코드", "A 노출코드", "옥션노출코드", "옥션 노출코드"],
   gmarketExposureCode: ["G노출코드", "G 노출코드", "G마켓노출코드", "G마켓 노출코드"],
@@ -70,12 +72,15 @@ export function makeCategoryReferences(rows: Row[]): CategoryReference[] {
 
   for (const row of rows) {
     const label = clean(pick(row, aliases.label));
+    const categoryTemplateCode = digits(pick(row, aliases.categoryTemplateCode));
     const categoryCode = digits(pick(row, aliases.categoryCode));
     const auctionExposureCode = digits(pick(row, aliases.auctionExposureCode));
     const gmarketExposureCode = digits(pick(row, aliases.gmarketExposureCode));
-    if (!label || !categoryCode || !auctionExposureCode || !gmarketExposureCode) continue;
 
-    const key = `${categoryCode}|${auctionExposureCode}|${gmarketExposureCode}`;
+    // 네 코드가 한 행에 모두 존재할 때만 유효한 기준으로 사용합니다.
+    if (!label || !categoryTemplateCode || !categoryCode || !auctionExposureCode || !gmarketExposureCode) continue;
+
+    const key = `${categoryTemplateCode}|${categoryCode}|${auctionExposureCode}|${gmarketExposureCode}`;
     const keywordValues = Object.values(row)
       .map(clean)
       .filter((value) => value && value.length <= 120)
@@ -87,6 +92,7 @@ export function makeCategoryReferences(rows: Row[]): CategoryReference[] {
     references.push({
       label,
       keywords,
+      categoryTemplateCode,
       categoryCode,
       auctionExposureCode,
       gmarketExposureCode,
@@ -127,6 +133,15 @@ function scorePreparedReference(productText: string, productTokens: Set<string>,
   return labelMatches * 90 + keywordMatches * 20 + longest * 4;
 }
 
+function hasCompleteTuple(product: Product): boolean {
+  return Boolean(
+    product.categoryTemplateCode
+      && product.categoryCode
+      && product.auctionExposureCode
+      && product.gmarketExposureCode,
+  );
+}
+
 export function applyCategoryReferences(
   products: Product[],
   references: CategoryReference[],
@@ -150,7 +165,7 @@ export function applyCategoryReferences(
   });
 
   const next = products.map((product) => {
-    if (product.categoryCode && product.auctionExposureCode && product.gmarketExposureCode) return product;
+    if (hasCompleteTuple(product)) return product;
 
     const productText = normalizeCategoryText(product.productName);
     const productTokenList = tokens(productText);
@@ -164,7 +179,14 @@ export function applyCategoryReferences(
     }
 
     if (!candidateIds.size) {
-      return { ...product, categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}` };
+      return {
+        ...product,
+        categoryTemplateCode: "",
+        categoryCode: "",
+        auctionExposureCode: "",
+        gmarketExposureCode: "",
+        categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}`,
+      };
     }
 
     let best: { prepared: PreparedReference; score: number } | undefined;
@@ -183,9 +205,16 @@ export function applyCategoryReferences(
       }
     }
 
-    const confident = Boolean(best && best.score >= 120 && (secondScore === 0 || best.score - secondScore >= 25));
+    const confident = Boolean(best && best.score >= 180 && (secondScore === 0 || best.score - secondScore >= 60));
     if (!best || !confident) {
-      return { ...product, categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}` };
+      return {
+        ...product,
+        categoryTemplateCode: "",
+        categoryCode: "",
+        auctionExposureCode: "",
+        gmarketExposureCode: "",
+        categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}`,
+      };
     }
 
     matched += 1;
@@ -193,17 +222,19 @@ export function applyCategoryReferences(
     return {
       ...product,
       categoryGroup: `카테고리 엑셀 자동분류 · ${selected.label}`,
-      categoryCode: product.categoryCode || selected.categoryCode,
-      auctionExposureCode: product.auctionExposureCode || selected.auctionExposureCode,
-      gmarketExposureCode: product.gmarketExposureCode || selected.gmarketExposureCode,
-      productGroupCode: product.productGroupCode || selected.productGroupCode,
-      noticeTemplateCode: product.noticeTemplateCode || selected.noticeTemplateCode,
+      // 절대 서로 다른 행의 코드를 섞지 않고 선택된 기준행의 네 코드를 통째로 적용합니다.
+      categoryTemplateCode: selected.categoryTemplateCode,
+      categoryCode: selected.categoryCode,
+      auctionExposureCode: selected.auctionExposureCode,
+      gmarketExposureCode: selected.gmarketExposureCode,
+      productGroupCode: selected.productGroupCode,
+      noticeTemplateCode: selected.noticeTemplateCode,
     };
   });
 
   return {
     products: next,
     matched,
-    pending: next.filter((product) => !(product.categoryCode && product.auctionExposureCode && product.gmarketExposureCode)).length,
+    pending: next.filter((product) => !hasCompleteTuple(product)).length,
   };
 }
