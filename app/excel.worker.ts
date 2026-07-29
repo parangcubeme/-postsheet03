@@ -4,7 +4,24 @@ import { makeProducts } from "./excel";
 import type { Row, WorkerResponse } from "./types";
 
 const PRODUCT_HEADERS = ["상품명", "제품명", "상품이름", "품명", "상품 명"];
-const PRICE_HEADERS = ["판매가", "판매가격", "상품가격", "상품 판매가", "공급가", "공급가격", "판매단가", "단가", "기준가격", "원가", "매입가", "소비자가", "정상가", "가격"];
+const PRICE_HEADERS = [
+  "판매가",
+  "A 판매가",
+  "G 판매가",
+  "판매가격",
+  "상품가격",
+  "상품 판매가",
+  "공급가",
+  "공급가격",
+  "판매단가",
+  "단가",
+  "기준가격",
+  "원가",
+  "매입가",
+  "소비자가",
+  "정상가",
+  "가격",
+];
 const CODE_HEADERS = ["판매자 상품코드", "판매자상품코드", "상품코드", "자체상품코드", "관리코드", "품목코드", "판매자코드"];
 
 function cleanKey(value: unknown): string {
@@ -17,10 +34,19 @@ function normalize(value: unknown): string {
 
 function scoreHeader(row: unknown[]): number {
   const expected = [...PRODUCT_HEADERS, ...PRICE_HEADERS, ...CODE_HEADERS].map(cleanKey);
-  return row
-    .map(cleanKey)
-    .filter(Boolean)
-    .reduce((score, cell) => score + (expected.some((item) => cell === item || cell.includes(item) || item.includes(cell)) ? 1 : 0), 0);
+  const keys = row.map(cleanKey).filter(Boolean);
+  let score = keys.reduce(
+    (total, cell) => total + (expected.some((item) => cell === item || cell.includes(item) || item.includes(cell)) ? 1 : 0),
+    0,
+  );
+
+  const isEsmHeader =
+    keys.includes("노출사이트") &&
+    keys.includes("상품명") &&
+    (keys.includes("a판매가") || keys.includes("g판매가"));
+  if (isEsmHeader) score += 20;
+
+  return score;
 }
 
 function findBestSheet(workbook: XLSX.WorkBook): { sheetName: string; matrix: unknown[][]; headerIndex: number; score: number } {
@@ -49,6 +75,19 @@ function uniqueHeaders(values: unknown[]): string[] {
   });
 }
 
+function valueByHeader(row: Row, name: string): unknown {
+  const target = cleanKey(name);
+  const found = Object.entries(row).find(([header]) => cleanKey(header) === target);
+  return found?.[1] ?? "";
+}
+
+function normalizeImportRow(row: Row): Row {
+  if (normalize(valueByHeader(row, "판매가"))) return row;
+
+  const esmPrice = valueByHeader(row, "A 판매가") || valueByHeader(row, "G 판매가");
+  return normalize(esmPrice) ? { ...row, 판매가: esmPrice } : row;
+}
+
 self.onmessage = (event: MessageEvent<ArrayBuffer>) => {
   try {
     const workbook = XLSX.read(event.data, { type: "array", cellDates: false });
@@ -63,8 +102,18 @@ self.onmessage = (event: MessageEvent<ArrayBuffer>) => {
     const rows: Row[] = matrix
       .slice(headerIndex + 1)
       .map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])))
-      .filter((row) => Object.values(row).some((value) => normalize(value)));
+      .filter((row) => Object.values(row).some((value) => normalize(value)))
+      .map(normalizeImportRow);
     const products = makeProducts(rows);
+
+    if (!products.length) {
+      const response: WorkerResponse = {
+        ok: false,
+        message: "상품명과 판매가가 입력된 상품행을 찾지 못했습니다. ESM 파일은 A 판매가 또는 G 판매가를 확인해 주세요.",
+      };
+      self.postMessage(response);
+      return;
+    }
 
     const response: WorkerResponse = { ok: true, rows, products, sheetName, headerRow: headerIndex + 1 };
     self.postMessage(response);
