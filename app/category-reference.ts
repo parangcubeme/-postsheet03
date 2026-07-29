@@ -98,20 +98,33 @@ export function makeCategoryReferences(rows: Row[]): CategoryReference[] {
   return references;
 }
 
-function scoreReference(productName: string, reference: CategoryReference): number {
-  const productText = normalizeCategoryText(productName);
-  const labelText = normalizeCategoryText(reference.label);
-  if (!productText || !labelText) return 0;
-  if (productText === labelText) return 1000;
-  if (productText.includes(labelText)) return 850 + Math.min(100, labelText.length);
+type PreparedReference = {
+  reference: CategoryReference;
+  labelText: string;
+  labelTokens: string[];
+};
 
-  const productTokens = new Set(tokens(productText));
-  const labelTokens = tokens(labelText);
-  const keywordMatches = reference.keywords.filter((keyword) => productTokens.has(keyword));
-  const labelMatches = labelTokens.filter((keyword) => productTokens.has(keyword));
-  const longest = [...keywordMatches, ...labelMatches].reduce((max, token) => Math.max(max, token.length), 0);
+function scorePreparedReference(productText: string, productTokens: Set<string>, prepared: PreparedReference): number {
+  if (!productText || !prepared.labelText) return 0;
+  if (productText === prepared.labelText) return 1000;
+  if (productText.includes(prepared.labelText)) return 850 + Math.min(100, prepared.labelText.length);
 
-  return labelMatches.length * 90 + keywordMatches.length * 20 + longest * 4;
+  let keywordMatches = 0;
+  let labelMatches = 0;
+  let longest = 0;
+
+  for (const keyword of prepared.reference.keywords) {
+    if (!productTokens.has(keyword)) continue;
+    keywordMatches += 1;
+    if (keyword.length > longest) longest = keyword.length;
+  }
+  for (const keyword of prepared.labelTokens) {
+    if (!productTokens.has(keyword)) continue;
+    labelMatches += 1;
+    if (keyword.length > longest) longest = keyword.length;
+  }
+
+  return labelMatches * 90 + keywordMatches * 20 + longest * 4;
 }
 
 export function applyCategoryReferences(
@@ -120,28 +133,71 @@ export function applyCategoryReferences(
 ): { products: Product[]; matched: number; pending: number } {
   let matched = 0;
 
+  const prepared: PreparedReference[] = references.map((reference) => ({
+    reference,
+    labelText: normalizeCategoryText(reference.label),
+    labelTokens: tokens(reference.label),
+  }));
+
+  const keywordIndex = new Map<string, number[]>();
+  prepared.forEach((item, index) => {
+    const searchTokens = new Set([...item.labelTokens, ...item.reference.keywords]);
+    for (const token of searchTokens) {
+      const list = keywordIndex.get(token);
+      if (list) list.push(index);
+      else keywordIndex.set(token, [index]);
+    }
+  });
+
   const next = products.map((product) => {
     if (product.categoryCode && product.auctionExposureCode && product.gmarketExposureCode) return product;
 
-    const ranked = references
-      .map((reference) => ({ reference, score: scoreReference(product.productName, reference) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score);
+    const productText = normalizeCategoryText(product.productName);
+    const productTokenList = tokens(productText);
+    const productTokenSet = new Set(productTokenList);
+    const candidateIds = new Set<number>();
 
-    const best = ranked[0];
-    const second = ranked[1];
-    const confident = Boolean(best && best.score >= 120 && (!second || best.score - second.score >= 25));
-    if (!best || !confident) return { ...product, categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}` };
+    for (const token of productTokenList) {
+      const ids = keywordIndex.get(token);
+      if (!ids) continue;
+      for (const id of ids) candidateIds.add(id);
+    }
+
+    if (!candidateIds.size) {
+      return { ...product, categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}` };
+    }
+
+    let best: { prepared: PreparedReference; score: number } | undefined;
+    let secondScore = 0;
+
+    for (const id of candidateIds) {
+      const item = prepared[id];
+      const score = scorePreparedReference(productText, productTokenSet, item);
+      if (score <= 0) continue;
+
+      if (!best || score > best.score) {
+        secondScore = best?.score ?? secondScore;
+        best = { prepared: item, score };
+      } else if (score > secondScore) {
+        secondScore = score;
+      }
+    }
+
+    const confident = Boolean(best && best.score >= 120 && (secondScore === 0 || best.score - secondScore >= 25));
+    if (!best || !confident) {
+      return { ...product, categoryGroup: `자동분류 확인 필요 · ${product.categoryGroup}` };
+    }
 
     matched += 1;
+    const selected = best.prepared.reference;
     return {
       ...product,
-      categoryGroup: `카테고리 엑셀 자동분류 · ${best.reference.label}`,
-      categoryCode: product.categoryCode || best.reference.categoryCode,
-      auctionExposureCode: product.auctionExposureCode || best.reference.auctionExposureCode,
-      gmarketExposureCode: product.gmarketExposureCode || best.reference.gmarketExposureCode,
-      productGroupCode: product.productGroupCode || best.reference.productGroupCode,
-      noticeTemplateCode: product.noticeTemplateCode || best.reference.noticeTemplateCode,
+      categoryGroup: `카테고리 엑셀 자동분류 · ${selected.label}`,
+      categoryCode: product.categoryCode || selected.categoryCode,
+      auctionExposureCode: product.auctionExposureCode || selected.auctionExposureCode,
+      gmarketExposureCode: product.gmarketExposureCode || selected.gmarketExposureCode,
+      productGroupCode: product.productGroupCode || selected.productGroupCode,
+      noticeTemplateCode: product.noticeTemplateCode || selected.noticeTemplateCode,
     };
   });
 
